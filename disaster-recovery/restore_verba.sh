@@ -40,6 +40,55 @@ if [ ! -d "../backups/$BACKUP_ID" ]; then
     exit 1
 fi
 
+echo "🔍 Checking for existing collections that would block restore..."
+
+# Check if any collections exist (Verba auto-creates them)
+EXISTING_COLLECTIONS=$(curl -s http://localhost:8080/v1/schema | jq -r '.classes[]?.class' 2>/dev/null)
+
+if [ ! -z "$EXISTING_COLLECTIONS" ]; then
+    echo "⚠️  Found existing collections that will block restore:"
+    echo "$EXISTING_COLLECTIONS" | sed 's/^/   - /'
+    echo ""
+
+    # Check if collections have data
+    HAS_DATA=false
+    for collection in $EXISTING_COLLECTIONS; do
+        COUNT=$(curl -s -X POST http://localhost:8080/v1/graphql \
+            -H "Content-Type: application/json" \
+            -d "{\"query\": \"{ Aggregate { $collection { meta { count } } } }\"}" | \
+            jq -r ".data.Aggregate.$collection[0].meta.count" 2>/dev/null)
+
+        if [ "$COUNT" != "null" ] && [ "$COUNT" != "0" ] && [ ! -z "$COUNT" ]; then
+            echo "⚠️  Collection $collection contains $COUNT objects"
+            HAS_DATA=true
+        fi
+    done
+
+    if [ "$HAS_DATA" = true ]; then
+        echo ""
+        echo "❌ CRITICAL: Some collections contain data!"
+        echo "💡 This restore will OVERWRITE existing data. Continue? (y/N)"
+        read -r CONFIRM
+        if [[ ! $CONFIRM =~ ^[Yy]$ ]]; then
+            echo "❌ Restore cancelled by user"
+            exit 1
+        fi
+        echo "⚠️  User confirmed: Proceeding with destructive restore..."
+    else
+        echo "✅ All existing collections are empty - safe to remove"
+    fi
+
+    echo "🗑️  Removing existing collections to enable restore..."
+    for collection in $EXISTING_COLLECTIONS; do
+        echo "   Deleting $collection..."
+        curl -s -X DELETE http://localhost:8080/v1/schema/$collection > /dev/null 2>&1
+    done
+
+    echo "✅ Existing collections removed"
+else
+    echo "✅ No existing collections found - ready for restore"
+fi
+
 echo "📦 Restoring backup..."
 
 # Restore backup using REST API

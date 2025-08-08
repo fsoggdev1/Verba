@@ -21,7 +21,11 @@ This directory contains a complete disaster recovery implementation for Verba's 
 
 ### Restore from Backup
 ```bash
+# Regular restore (with safety checks and user confirmation)
 ./restore_verba.sh <backup_id>
+
+# Force restore (automatic, no prompts - USE WITH CAUTION)
+./force_restore_verba.sh <backup_id>
 ```
 
 ### Stop Disaster Recovery
@@ -34,7 +38,8 @@ This directory contains a complete disaster recovery implementation for Verba's 
 ### Shell Scripts
 - **`backup_verba.sh`** - Creates timestamped backups of current Verba data
 - **`start_disaster_recovery.sh`** - Starts fresh Weaviate instance for recovery
-- **`restore_verba.sh`** - Restores backup to current Weaviate instance
+- **`restore_verba.sh`** - Restores backup with safety checks and user confirmation
+- **`force_restore_verba.sh`** - Automatic restore without prompts (USE WITH CAUTION)
 - **`list_backups.sh`** - Lists all available backups with details
 - **`stop_disaster_recovery.sh`** - Stops DR environment and optionally restarts Verba
 
@@ -106,9 +111,32 @@ This directory contains a complete disaster recovery implementation for Verba's 
 
 ### Restore Process
 1. **Environment Setup**: Starts fresh Weaviate instance with same configuration
-2. **Data Restoration**: Uses Weaviate's restore API to recover all collections
-3. **Verification**: Counts documents and collections to ensure completeness
-4. **Testing**: Provides tools to verify functionality
+2. **Collection Cleanup**: Removes auto-created collections that block restore (critical step)
+3. **Data Restoration**: Uses Weaviate's restore API to recover all collections
+4. **Verification**: Counts documents and collections to ensure completeness
+5. **Testing**: Provides tools to verify functionality
+
+**Important Note**: Verba automatically creates empty collections when it starts. These must be removed before restore, or the process will fail with "class name already exists" errors. Our scripts handle this automatically.
+
+### **Collection Overwrite Solution**
+
+Our disaster recovery system solves Weaviate's fundamental limitation where backup restore fails if collections already exist:
+
+#### **The Problem**
+- Weaviate cannot overwrite existing collections during restore
+- Verba auto-creates empty collections when it starts
+- Standard restore fails with "class name already exists" errors
+
+#### **Our Solution**
+1. **Smart Detection**: Automatically detects existing collections
+2. **Data Safety Analysis**: Counts objects in each collection to determine if they contain data
+3. **User Confirmation**: Prompts for confirmation only if collections contain data
+4. **Automatic Cleanup**: Safely removes empty collections without user intervention
+5. **Standard Restore**: Uses Weaviate's native restore API in clean environment
+
+#### **Two Restore Modes**
+- **Regular Restore**: Safe mode with user confirmation for destructive operations
+- **Force Restore**: Automatic mode for scripted scenarios (removes all collections without prompts)
 
 ### Container Management
 - **Project Isolation**: Uses `verba-dr` project name to avoid conflicts
@@ -136,6 +164,14 @@ curl -s http://localhost:8080/v1/meta | grep backup-filesystem
 
 ### Restore Fails
 ```bash
+# Check if auto-created collections are blocking restore
+curl -s http://localhost:8080/v1/schema | jq '.classes[] | .class'
+
+# If collections exist, remove them first
+for collection in "VERBA_DOCUMENTS" "VERBA_SUGGESTIONS" "VERBA_Embedding_all_MiniLM_L6_v2" "VERBA_CONFIGURATION" "VERBA_Embedding_embed_english_light_v3_0" "VERBA_Embedding_all_mpnet_base_v2" "VERBA_Embedding_Couldn_t_connect_to_Ollama_http___host_docker_internal_11434"; do
+  curl -X DELETE http://localhost:8080/v1/schema/$collection
+done
+
 # Verify backup exists
 ls -la ../backups/
 
