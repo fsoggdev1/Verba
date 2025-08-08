@@ -201,7 +201,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       setSocketOnline(false);
       isFetching.current = false;
       setFetchingStatus("DONE");
-      setReconnect((prev) => !prev);
+
+      // Simple reconnection for chat (less critical than import)
+      setTimeout(() => {
+        setReconnect((prev) => !prev);
+      }, 3000); // 3-second delay for chat reconnection
     };
 
     setSocket(localSocket);

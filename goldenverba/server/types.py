@@ -88,6 +88,7 @@ class FileStatus(str, Enum):
     NER = "NER"
     EXTRACTION = "EXTRACTION"
     SUMMARIZING = "SUMMARIZING"
+    PROCESSING = "PROCESSING"
     DONE = "DONE"
     ERROR = "ERROR"
 

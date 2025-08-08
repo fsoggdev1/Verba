@@ -95,11 +95,13 @@ class VerbaManager:
     # Import
 
     async def import_document(
-        self, client, fileConfig: FileConfig, logger: LoggerManager = LoggerManager()
+        self, client, fileConfig: FileConfig, logger: LoggerManager = LoggerManager(), credentials=None
     ):
         try:
             loop = asyncio.get_running_loop()
             start_time = loop.time()
+
+            msg.info(f"🚀 Starting resilient import for {fileConfig.filename}")
 
             duplicate_uuid = await self.weaviate_manager.exist_document_name(
                 client, fileConfig.filename
@@ -164,21 +166,27 @@ class VerbaManager:
                     f"No documents imported {successful_tasks} of {len(results)} succesful tasks"
                 )
 
+            # Final success report
+            total_time = round(loop.time() - start_time, 2)
+            msg.good(f"🎉 Import completed successfully for {fileConfig.filename} in {total_time}s")
             await logger.send_report(
                 fileConfig.fileID,
                 status=FileStatus.DONE,
                 message=f"Import for {fileConfig.filename} completed successfully",
-                took=round(loop.time() - start_time, 2),
+                took=total_time,
             )
 
         except Exception as e:
+            total_time = round(loop.time() - start_time, 2)
+            msg.fail(f"❌ Import failed for {fileConfig.filename} after {total_time}s: {str(e)}")
             await logger.send_report(
                 fileConfig.fileID,
                 status=FileStatus.ERROR,
                 message=f"Import for {fileConfig.filename} failed: {str(e)}",
-                took=0,
+                took=total_time,
             )
-            return
+            # Re-raise the exception so the resilient wrapper can retry if needed
+            raise
 
     async def process_single_document(
         self,
@@ -212,6 +220,7 @@ class VerbaManager:
             elif duplicate_uuid is not None and currentFileConfig.overwrite:
                 await self.weaviate_manager.delete_document(client, duplicate_uuid)
 
+            msg.info(f"📝 Starting chunking for {document.title}")
             chunk_task = asyncio.create_task(
                 self.chunker_manager.chunk(
                     currentFileConfig.rag_config["Chunker"].selected,
@@ -224,7 +233,9 @@ class VerbaManager:
                 )
             )
             chunked_documents = await chunk_task
+            msg.good(f"✅ Chunking completed for {document.title} - {len(chunked_documents[0].chunks) if chunked_documents else 0} chunks created")
 
+            msg.info(f"🔢 Starting embedding for {document.title}")
             embedding_task = asyncio.create_task(
                 self.embedder_manager.vectorize(
                     currentFileConfig.rag_config["Embedder"].selected,
@@ -234,19 +245,87 @@ class VerbaManager:
                 )
             )
             vectorized_documents = await embedding_task
+            msg.good(f"✅ Embedding completed for {document.title}")
 
-            for document in vectorized_documents:
-                ingesting_task = asyncio.create_task(
-                    self.weaviate_manager.import_document(
-                        client,
-                        document,
-                        currentFileConfig.rag_config["Embedder"]
-                        .components[fileConfig.rag_config["Embedder"].selected]
-                        .config["Model"]
-                        .value,
-                    )
-                )
-                await ingesting_task
+            # Add heartbeat and retry logic for ingesting phase
+            msg.info(f"About to start ingesting heartbeat for {currentFileConfig.fileID}")
+
+            heartbeat_task = None
+            try:
+                # Create heartbeat task
+                async def ingesting_heartbeat():
+                    heartbeat_count = 0
+                    while True:
+                        await asyncio.sleep(30)  # Send heartbeat every 30 seconds
+                        heartbeat_count += 1
+                        msg.info(f"Ingesting heartbeat #{heartbeat_count} for {currentFileConfig.fileID}")
+                        await logger.send_heartbeat(
+                            currentFileConfig.fileID,
+                            f"Ingesting {len(vectorized_documents)} documents into Weaviate... (heartbeat #{heartbeat_count})"
+                        )
+
+                heartbeat_task = asyncio.create_task(ingesting_heartbeat())
+                msg.info(f"✅ Successfully started ingesting heartbeat task for {currentFileConfig.fileID}")
+
+                # Start ingesting - this is the critical phase that must succeed
+                msg.info(f"💾 Starting ingestion for {len(vectorized_documents)} documents")
+                for i, document in enumerate(vectorized_documents, 1):
+                    msg.info(f"💾 Ingesting document {i}/{len(vectorized_documents)}: {document.title}")
+                    # Retry logic for ingesting each document with client reconnection
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            ingesting_task = asyncio.create_task(
+                                self.weaviate_manager.import_document(
+                                    client,
+                                    document,
+                                    currentFileConfig.rag_config["Embedder"]
+                                    .components[fileConfig.rag_config["Embedder"].selected]
+                                    .config["Model"]
+                                    .value,
+                                )
+                            )
+                            await ingesting_task
+                            msg.good(f"✅ Successfully ingested document {i}/{len(vectorized_documents)}: {document.title}")
+                            break  # Success, exit retry loop
+                        except Exception as e:
+                            error_str = str(e)
+                            if attempt < max_retries - 1:
+                                wait_time = 2 ** attempt  # Exponential backoff
+                                msg.warn(f"Ingesting attempt {attempt + 1} failed for {document.title}: {error_str}. Retrying in {wait_time}s...")
+
+                                # Check if this is a Weaviate client connection error
+                                if "WeaviateClient` is closed" in error_str or "client.connect()" in error_str:
+                                    msg.info(f"🔄 Weaviate client connection lost, attempting to reconnect...")
+                                    try:
+                                        # Import the client manager to reconnect
+                                        from goldenverba.server.api import client_manager
+                                        # Use the passed credentials for reconnection
+                                        if credentials:
+                                            client = await client_manager.connect(credentials)
+                                            msg.good(f"✅ Successfully reconnected to Weaviate")
+                                        else:
+                                            msg.warn(f"⚠️ No credentials available for reconnection")
+                                    except Exception as reconnect_error:
+                                        msg.warn(f"⚠️ Failed to reconnect to Weaviate: {str(reconnect_error)}")
+
+                                await asyncio.sleep(wait_time)
+                            else:
+                                msg.fail(f"❌ All {max_retries} ingesting attempts failed for {document.title}: {error_str}")
+                                raise e
+            except Exception as e:
+                msg.warn(f"Error during ingesting: {str(e)}")
+                raise
+            finally:
+                if heartbeat_task:
+                    msg.info(f"Cancelling ingesting heartbeat task for {currentFileConfig.fileID}")
+                    heartbeat_task.cancel()
+                    try:
+                        await heartbeat_task
+                    except asyncio.CancelledError:
+                        msg.info(f"Ingesting heartbeat task cancelled for {currentFileConfig.fileID}")
+                    except Exception as e:
+                        msg.warn(f"Error cancelling ingesting heartbeat: {str(e)}")
 
             await logger.send_report(
                 currentFileConfig.fileID,
@@ -810,18 +889,47 @@ class ClientManager:
         current_time = datetime.now()
         clients_to_remove = []
 
-        for cred_hash, client_data in self.clients.items():
+        # Create a copy of the items to avoid "dictionary changed size during iteration"
+        client_items = list(self.clients.items())
+
+        for cred_hash, client_data in client_items:
+            # Check if client still exists (might have been removed by another cleanup)
+            if cred_hash not in self.clients:
+                continue
+
             time_difference = current_time - client_data["timestamp"]
             if time_difference.total_seconds() / 60 > self.max_time:
                 clients_to_remove.append(cred_hash)
-            client: WeaviateAsyncClient = client_data["client"]
-            if not await client.is_ready():
+                continue
+
+            try:
+                client: WeaviateAsyncClient = client_data["client"]
+                if not await client.is_ready():
+                    clients_to_remove.append(cred_hash)
+            except Exception as e:
+                msg.warn(f"Error checking client {cred_hash} readiness: {str(e)}")
                 clients_to_remove.append(cred_hash)
 
         for cred_hash in clients_to_remove:
-            await self.manager.disconnect(self.clients[cred_hash]["client"])
-            del self.clients[cred_hash]
-            msg.warn(f"Removed client: {cred_hash}")
+            # Double-check client still exists before removing
+            if cred_hash in self.clients:
+                try:
+                    await self.manager.disconnect(self.clients[cred_hash]["client"])
+                    del self.clients[cred_hash]
+                    msg.warn(f"Removed client: {cred_hash}")
+                except Exception as e:
+                    msg.warn(f"Error removing client {cred_hash}: {str(e)}")
+                    # Force remove from dictionary even if cleanup failed
+                    if cred_hash in self.clients:
+                        del self.clients[cred_hash]
 
         msg.info(f"Cleaned up {len(clients_to_remove)} clients")
+        msg.info(f"{len(self.clients)} clients connected")
+
+        # Log remaining clients safely
+        client_items = list(self.clients.items())
+        for cred_hash, client_data in client_items:
+            if cred_hash in self.clients:  # Double-check still exists
+                msg.info(f"Client {cred_hash} connected at {client_data['timestamp']}")
+
         self.heartbeat()

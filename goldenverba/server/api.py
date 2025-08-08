@@ -7,6 +7,8 @@ import asyncio
 
 from goldenverba.server.helpers import LoggerManager, BatchManager
 from weaviate.client import WeaviateAsyncClient
+from weaviate.classes.query import Filter
+from pydantic import BaseModel
 
 import os
 from pathlib import Path
@@ -37,6 +39,8 @@ from goldenverba.server.types import (
     GetVectorPayload,
     DataBatchPayload,
     ChunksPayload,
+    FileConfig,
+    FileStatus,
 )
 
 load_dotenv()
@@ -199,6 +203,198 @@ async def connect_to_verba(payload: ConnectPayload):
 
 ### WEBSOCKETS
 
+async def check_document_in_weaviate_with_retry(client, fileConfig: FileConfig, max_retries: int = 3) -> bool:
+    """
+    Check if a document was successfully imported to Weaviate with retry logic.
+    Returns True if document exists, False otherwise.
+    """
+    for attempt in range(max_retries):
+        try:
+            # Check if the document collection exists
+            document_collection_name = "VERBA_DOCUMENTS"
+            if not await client.collections.exists(document_collection_name):
+                if attempt == 0:  # Only log on first attempt
+                    msg.warn(f"❌ Document collection {document_collection_name} does not exist")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)  # Wait 1 second before retry
+                    continue
+                return False
+
+            # Get the document collection and search for the file
+            document_collection = client.collections.get(document_collection_name)
+
+            # Search for documents with matching title using BM25 with timeout protection
+            try:
+                # Add timeout to prevent infinite loops in BM25 search
+                response = await asyncio.wait_for(
+                    document_collection.query.bm25(
+                        query=fileConfig.filename,
+                        limit=5,
+                        return_properties=["title", "extension", "fileSize"]
+                    ),
+                    timeout=30.0  # 30 second timeout for BM25 search
+                )
+
+                if response.objects and len(response.objects) > 0:
+                    # Check if any document has an exact title match
+                    for doc in response.objects:
+                        if doc.properties.get("title") == fileConfig.filename:
+                            msg.info(f"✅ Document {fileConfig.filename} found in Weaviate (UUID: {doc.uuid})")
+                            return True
+
+                    if attempt == 0:  # Only log on first attempt
+                        msg.warn(f"❌ No exact match for {fileConfig.filename} (found {len(response.objects)} similar documents)")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2)  # Wait 2 seconds before retry
+                        continue
+                    return False
+
+                if attempt == 0:  # Only log on first attempt
+                    msg.warn(f"❌ Document {fileConfig.filename} not found in Weaviate")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2)  # Wait 2 seconds before retry
+                    continue
+                return False
+
+            except asyncio.TimeoutError:
+                if attempt == 0:  # Only log on first attempt
+                    msg.warn(f"⏰ BM25 search timed out after 30 seconds for {fileConfig.filename}")
+                    msg.info("🔄 Falling back to property filter for exact match...")
+
+                # Fallback to property filter if BM25 times out
+                from weaviate.classes.query import Filter
+                fallback_response = await document_collection.query.fetch_objects(
+                    filters=Filter.by_property("title").equal(fileConfig.filename),
+                    limit=1,
+                    return_properties=["title", "extension", "fileSize"]
+                )
+
+                if fallback_response.objects and len(fallback_response.objects) > 0:
+                    doc = fallback_response.objects[0]
+                    msg.info(f"✅ Document {fileConfig.filename} found via fallback (UUID: {doc.uuid})")
+                    return True
+                else:
+                    if attempt == 0:  # Only log on first attempt
+                        msg.warn(f"❌ Document {fileConfig.filename} not found via fallback either")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2)  # Wait 2 seconds before retry
+                        continue
+                    return False
+
+        except Exception as e:
+            if attempt == 0:  # Only log on first attempt
+                msg.warn(f"⚠️ Error checking document in Weaviate: {str(e)}")
+                msg.info(f"🔍 Attempted to verify document: {fileConfig.filename}")
+            if attempt < max_retries - 1:
+                msg.warn(f"🔄 Retrying document verification (attempt {attempt + 2}/{max_retries})...")
+                await asyncio.sleep(2)  # Wait 2 seconds before retry
+                continue
+            else:
+                msg.warn(f"❌ Document verification failed after {max_retries} attempts")
+                return False
+
+    return False
+
+
+# Keep the old function name for backward compatibility
+async def check_document_in_weaviate(client, fileConfig: FileConfig) -> bool:
+    """Backward compatibility wrapper"""
+    return await check_document_in_weaviate_with_retry(client, fileConfig, max_retries=3)
+
+
+async def resilient_import_document(client, fileConfig: FileConfig, logger: LoggerManager, credentials=None):
+    """
+    Import document with resilience to WebSocket failures.
+    This function continues processing even if WebSocket connection dies,
+    and verifies the actual import result by checking Weaviate.
+    """
+    import time
+    start_time = time.time()
+
+    msg.info(f"🚀 RESILIENT IMPORT STARTED for {fileConfig.filename}")
+    msg.info(f"📊 Expected processing time: ~15-20 minutes")
+
+    # Store credentials for reconnection purposes (don't modify fileConfig)
+    stored_credentials = credentials
+
+    import_error = None
+
+    try:
+        # Call the actual import function with credentials for reconnection
+        await manager.import_document(client, fileConfig, logger, stored_credentials)
+        msg.good(f"✅ Import function completed for {fileConfig.filename}")
+
+    except Exception as e:
+        import_error = e
+        msg.warn(f"⚠️ Import function failed for {fileConfig.filename}: {str(e)}")
+
+    # Always check if the document actually made it to Weaviate
+    total_time = time.time() - start_time
+    msg.info(f"🔍 Checking if {fileConfig.filename} was successfully imported to Weaviate...")
+
+    # Small delay to ensure document is fully committed to Weaviate
+    await asyncio.sleep(2)
+
+    # Create a fresh client connection for verification to avoid using a potentially closed client
+    verification_client = None
+    document_exists = False
+    try:
+        if stored_credentials:
+            from goldenverba.server.api import client_manager
+            verification_client = await client_manager.connect(stored_credentials)
+            document_exists = await check_document_in_weaviate_with_retry(verification_client, fileConfig, max_retries=3)
+        else:
+            # Fallback to existing client if no credentials available
+            document_exists = await check_document_in_weaviate_with_retry(client, fileConfig, max_retries=3)
+    except Exception as verification_error:
+        msg.warn(f"⚠️ Verification failed with error: {str(verification_error)}, trying with existing client...")
+        try:
+            # Fallback to existing client with retry
+            document_exists = await check_document_in_weaviate_with_retry(client, fileConfig, max_retries=3)
+        except Exception as fallback_error:
+            msg.warn(f"⚠️ Both verification attempts failed after retries: {str(fallback_error)}")
+            document_exists = False
+
+    if document_exists:
+        # Document successfully imported, send success status
+        msg.good(f"🎉 Document {fileConfig.filename} successfully imported to Weaviate in {total_time:.1f}s")
+        try:
+            await logger.send_report(
+                fileConfig.fileID,
+                status=FileStatus.DONE,
+                message=f"Import for {fileConfig.filename} completed successfully",
+                took=total_time,
+            )
+            # Success report sent (removed verbose logging)
+        except Exception as report_error:
+            msg.warn(f"📤 Could not send success report via WebSocket: {str(report_error)} - but import succeeded")
+    else:
+        # Document not found in Weaviate, send error status
+        if import_error:
+            error_message = f"Import failed: {str(import_error)}"
+            msg.fail(f"💥 Import failed for {fileConfig.filename}: {error_message}")
+        else:
+            error_message = f"Document not found in Weaviate after import (verification failed)"
+            msg.warn(f"⚠️ Verification failed for {fileConfig.filename}: {error_message}")
+            msg.info(f"💡 Note: Document may still be successfully imported - check Weaviate directly")
+
+        try:
+            await logger.send_report(
+                fileConfig.fileID,
+                status=FileStatus.ERROR,
+                message=error_message,
+                took=total_time,
+            )
+            # Error report sent (removed verbose logging)
+        except Exception as report_error:
+            msg.warn(f"📤 Could not send error report via WebSocket: {str(report_error)} - but import failure is logged")
+
+        # Raise the original error if there was one, or a new error if document not found
+        if import_error:
+            raise import_error
+        else:
+            raise Exception("Document not found in Weaviate after import")
+
 
 @app.websocket("/ws/generate_stream")
 async def websocket_generate_stream(websocket: WebSocket):
@@ -241,27 +437,84 @@ async def websocket_import_files(websocket: WebSocket):
     if production == "Demo":
         return
 
-    await websocket.accept()
-    logger = LoggerManager(websocket)
-    batcher = BatchManager()
+    try:
+        await websocket.accept()
+        msg.info("🔌 WebSocket connection accepted for import")
+        logger = LoggerManager(websocket)
+        batcher = BatchManager()
+    except Exception as e:
+        msg.warn(f"⚠️ Failed to accept WebSocket connection: {str(e)}")
+        return
 
-    while True:
-        try:
-            data = await websocket.receive_text()
-            batch_data = DataBatchPayload.model_validate_json(data)
-            fileConfig = batcher.add_batch(batch_data)
-            if fileConfig is not None:
-                client = await client_manager.connect(batch_data.credentials)
-                await asyncio.create_task(
-                    manager.import_document(client, fileConfig, logger)
-                )
+    # Note: Removed WebSocket heartbeat ping as it's not needed with retry logic in place
+    # The LoggerManager already handles WebSocket failures with 3 retries
 
-        except WebSocketDisconnect:
-            msg.warn("Import WebSocket connection closed by client.")
-            break
-        except Exception as e:
-            msg.fail(f"Import WebSocket Error: {str(e)}")
-            break
+    try:
+        while True:
+            try:
+                data = await websocket.receive_text()
+                batch_data = DataBatchPayload.model_validate_json(data)
+                fileConfig = batcher.add_batch(batch_data)
+
+                # Only log when we get the complete fileConfig, not every batch
+                if fileConfig is not None:
+                    msg.info(f"🔥 ALL BATCHES COLLECTED for {fileConfig.filename} - Starting resilient import")
+
+                if fileConfig is not None:
+                    client = await client_manager.connect(batch_data.credentials)
+
+                    # Call resilient import function
+                    try:
+                        msg.info(f"🚀 CALLING RESILIENT IMPORT for {fileConfig.filename}")
+                        await resilient_import_document(client, fileConfig, logger, batch_data.credentials)
+                        msg.good(f"🎉 RESILIENT IMPORT COMPLETED SUCCESSFULLY for {fileConfig.filename}")
+                    except Exception as e:
+                        msg.fail(f"💥 RESILIENT IMPORT FAILED for {fileConfig.filename}: {str(e)}")
+
+                        # Send error report but don't break the WebSocket loop
+                        try:
+                            await logger.send_report(
+                                fileConfig.fileID,
+                                status=FileStatus.ERROR,
+                                message=f"Resilient import failed: {str(e)}",
+                                took=0,
+                            )
+                        except Exception as report_error:
+                            msg.warn(f"Could not send error report: {str(report_error)}")
+
+            except WebSocketDisconnect:
+                msg.warn("🔌 Import WebSocket connection closed by client - but background imports will continue")
+                break
+            except Exception as e:
+                error_str = str(e).lower()
+                # Check for WebSocket connection state errors
+                if any(phrase in error_str for phrase in [
+                    "need to call \"accept\" first",
+                    "websocket is not connected",
+                    "cannot call \"send\" once a close message has been sent",
+                    "websocket connection is closed"
+                ]):
+                    msg.warn(f"🔌 WebSocket connection error: {str(e)} - background imports will continue")
+                    msg.info("📋 Check console logs for import progress")
+                    break
+                else:
+                    msg.warn(f"⚠️ Import WebSocket Error: {str(e)}")
+                    # For other errors, continue processing
+                    continue
+
+    finally:
+        # Note: No heartbeat task to cancel since we removed the ping functionality
+
+        # Log background tasks status but DON'T cancel them
+        if hasattr(websocket, '_background_tasks'):
+            active_tasks = [task for task in websocket._background_tasks if not task.done()]
+            if active_tasks:
+                msg.info(f"🔄 {len(active_tasks)} background import tasks will continue running after WebSocket closes")
+                # Background tasks continuing (removed verbose per-task logging)
+            else:
+                msg.info("✅ All background import tasks completed")
+
+        # WebSocket handler cleanup completed (removed verbose logging)
 
 
 ### CONFIG ENDPOINTS
@@ -794,3 +1047,63 @@ async def delete_suggestion(payload: DeleteSuggestionPayload):
                 "status": 400,
             }
         )
+
+
+class CheckDocumentStatusPayload(BaseModel):
+    filename: str
+    credentials: Credentials
+
+
+@app.post("/api/check_document_status")
+async def check_document_status(payload: CheckDocumentStatusPayload):
+    """Check if a document exists in Weaviate by filename"""
+    try:
+        msg.info(f"🔍 Received payload: filename={payload.filename}, credentials type={type(payload.credentials)}")
+        msg.info(f"🔍 Credentials: {payload.credentials}")
+
+        client = await client_manager.connect(payload.credentials)
+
+        # Query Weaviate to check if document exists
+        document_collection = client.collections.get("VERBA_DOCUMENTS")
+
+        # Use exact case-insensitive match with proper Weaviate filter
+        # First try with exact case-sensitive match
+        response = await document_collection.query.fetch_objects(
+            limit=1,
+            return_properties=["title", "extension", "fileSize"],
+            filters=Filter.by_property("title").equal(payload.filename)
+        )
+
+        # If no exact match, try case-insensitive by fetching all and filtering
+        if len(response.objects) == 0:
+            msg.info(f"🔍 No exact case-sensitive match for '{payload.filename}', trying case-insensitive")
+
+            # Fetch all documents and do case-insensitive comparison
+            all_docs_response = await document_collection.query.fetch_objects(
+                limit=1000,
+                return_properties=["title", "extension", "fileSize"]
+            )
+
+            target_filename_lower = payload.filename.lower()
+            exact_matches = []
+
+            for obj in all_docs_response.objects:
+                stored_title = obj.properties.get('title', '')
+                if stored_title.lower() == target_filename_lower:
+                    exact_matches.append(obj)
+                    msg.info(f"🔍 Case-insensitive match found: '{stored_title}' matches '{payload.filename}'")
+
+            exists = len(exact_matches) > 0
+        else:
+            exists = True
+            msg.info(f"🔍 Exact case-sensitive match found for '{payload.filename}'")
+
+        msg.info(f"📋 Document status check for '{payload.filename}': {'EXISTS' if exists else 'NOT FOUND'}")
+        return {"exists": exists}
+
+    except Exception as e:
+        msg.warn(f"Failed to check document status for {payload.filename}: {str(e)}")
+        return {"exists": False, "error": str(e)}
+
+
+

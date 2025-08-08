@@ -181,6 +181,7 @@ export type FileData = {
     | "NER"
     | "EXTRACTION"
     | "SUMMARIZING"
+    | "PROCESSING"
     | "WAITING"
     | "DONE"
     | "ERROR";
@@ -203,6 +204,7 @@ export type StatusReport = {
     | "NER"
     | "EXTRACTION"
     | "SUMMARIZING"
+    | "PROCESSING"
     | "DONE"
     | "WAITING"
     | "ERROR";
@@ -228,6 +230,7 @@ export const statusColorMap = {
   NER: "bg-button-verba",
   EXTRACTION: "bg-button-verba",
   SUMMARIZING: "bg-button-verba",
+  PROCESSING: "bg-button-verba",
   WAITING: "bg-button-verba",
 };
 
@@ -243,6 +246,7 @@ export const statusTextMap = {
   NER: "Extracting NER...",
   EXTRACTION: "Extraction REL...",
   SUMMARIZING: "Summarizing...",
+  PROCESSING: "Processing...",
   WAITING: "Uploading...",
 };
 

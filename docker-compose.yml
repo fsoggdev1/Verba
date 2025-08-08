@@ -17,7 +17,6 @@ services:
       - UNSTRUCTURED_API_KEY=$UNSTRUCTURED_API_KEY
       - UNSTRUCTURED_API_URL=$UNSTRUCTURED_API_URL
       - GITHUB_TOKEN=$GITHUB_TOKEN
-
     volumes:
       - ./data:/data/
     depends_on:
@@ -59,7 +58,7 @@ services:
       QUERY_DEFAULTS_LIMIT: 25
       AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
       PERSISTENCE_DATA_PATH: '/var/lib/weaviate'
-      ENABLE_MODULES: 'e'
+      ENABLE_MODULES: 'text2vec-openai,text2vec-cohere,text2vec-huggingface,qna-openai,generative-openai,generative-cohere'
       CLUSTER_HOSTNAME: 'node1'
     networks:
       - ollama-docker

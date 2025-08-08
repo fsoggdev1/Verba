@@ -174,7 +174,7 @@ class WeaviateManager:
                 cluster_url=w_url,
                 auth_credentials=AuthApiKey(w_key),
                 additional_config=AdditionalConfig(
-                    timeout=Timeout(init=60, query=300, insert=300)
+                    timeout=Timeout(init=120, query=600, insert=600)
                 ),
             )
         else:
@@ -185,7 +185,7 @@ class WeaviateManager:
         return weaviate.use_async_with_local(
             host=w_url,
             additional_config=AdditionalConfig(
-                timeout=Timeout(init=60, query=300, insert=300)
+                timeout=Timeout(init=120, query=600, insert=600)
             ),
         )
 
@@ -202,7 +202,7 @@ class WeaviateManager:
                 port=int(port),
                 skip_init_checks=True,
                 additional_config=AdditionalConfig(
-                    timeout=Timeout(init=60, query=300, insert=300)
+                    timeout=Timeout(init=120, query=600, insert=600)
                 ),
             )
         else:
@@ -212,7 +212,7 @@ class WeaviateManager:
                 skip_init_checks=True,
                 auth_credentials=AuthApiKey(w_key),
                 additional_config=AdditionalConfig(
-                    timeout=Timeout(init=60, query=300, insert=300)
+                    timeout=Timeout(init=120, query=600, insert=600)
                 ),
             )
 
@@ -220,7 +220,7 @@ class WeaviateManager:
         msg.info(f"Connecting to Weaviate Embedded")
         return weaviate.use_async_with_embedded(
             additional_config=AdditionalConfig(
-                timeout=Timeout(init=60, query=300, insert=300)
+                timeout=Timeout(init=120, query=600, insert=600)
             )
         )
 
@@ -1017,6 +1017,12 @@ class ChunkerManager:
                 embedder_config = (
                     fileConfig.rag_config["Embedder"].components[embedder.name].config
                 )
+                # Send heartbeat before starting chunking
+                await logger.send_heartbeat(
+                    fileConfig.fileID,
+                    f"Starting chunking with {chunker}"
+                )
+
                 chunked_documents = await self.chunkers[chunker].chunk(
                     config=config,
                     documents=documents,
@@ -1079,6 +1085,12 @@ class EmbeddingManager:
                 config = fileConfig.rag_config["Embedder"].components[embedder].config
 
                 for document in documents:
+                    # Send heartbeat before embedding
+                    await logger.send_heartbeat(
+                        fileConfig.fileID,
+                        f"Embedding {len(document.chunks)} chunks with {embedder}"
+                    )
+
                     content = [
                         document.metadata + "\n" + chunk.content
                         for chunk in document.chunks

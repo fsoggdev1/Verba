@@ -33,6 +33,8 @@ const IngestionView: React.FC<IngestionViewProps> = ({
   const [selectedFileData, setSelectedFileData] = useState<string | null>(null);
   const [reconnect, setReconnect] = useState(false);
   const [socket, setSocket] = useState<WebSocket | null>(null);
+  const [reconnectAttempts, setReconnectAttempts] = useState(0);
+  const [maxReconnectAttempts] = useState(3);
 
   const [socketStatus, setSocketStatus] = useState<"ONLINE" | "OFFLINE">(
     "OFFLINE"
@@ -42,6 +44,8 @@ const IngestionView: React.FC<IngestionViewProps> = ({
     setReconnect(true);
   }, []);
 
+  // Removed periodic status checking - it was not working properly
+
   // Setup Import WebSocket and messages
   useEffect(() => {
     const socketHost = getImportWebSocketApiHost();
@@ -50,6 +54,7 @@ const IngestionView: React.FC<IngestionViewProps> = ({
     localSocket.onopen = () => {
       console.log("Import WebSocket connection opened to " + socketHost);
       setSocketStatus("ONLINE");
+      setReconnectAttempts(0); // Reset reconnect attempts on successful connection
     };
 
     localSocket.onmessage = (event) => {
@@ -80,20 +85,35 @@ const IngestionView: React.FC<IngestionViewProps> = ({
       console.error("Import WebSocket Error:", error);
       setSocketStatus("OFFLINE");
       setSocketErrorStatus();
-      setReconnect((prev) => !prev);
+
+      // Simple reconnection attempt (not aggressive periodic)
+      if (reconnectAttempts < maxReconnectAttempts) {
+        console.log(`Attempting to reconnect (attempt ${reconnectAttempts + 1}/${maxReconnectAttempts})`);
+        setReconnectAttempts(prev => prev + 1);
+        setTimeout(() => {
+          setReconnect((prev) => !prev);
+        }, 2000); // Simple 2-second delay
+      } else {
+        console.log("Max reconnection attempts reached - manual reconnection required");
+        addStatusMessage(`WebSocket connection failed after ${maxReconnectAttempts} attempts - please reconnect manually`, "WARNING");
+      }
     };
 
     localSocket.onclose = (event) => {
       setSocketStatus("OFFLINE");
-      setSocketErrorStatus();
       if (event.wasClean) {
         console.log(
           `Import WebSocket connection closed cleanly, code=${event.code}, reason=${event.reason}`
         );
       } else {
         console.error("WebSocket connection died");
+        // Only mark files as ERROR if the connection died unexpectedly
+        setSocketErrorStatus();
       }
-      setReconnect((prev) => !prev);
+
+      // Removed automatic reconnection logic - it was not working properly
+      console.log("WebSocket connection failed - manual reconnection required");
+      addStatusMessage(`WebSocket connection failed - please reconnect manually`, "WARNING");
     };
 
     setSocket(localSocket);
@@ -106,10 +126,16 @@ const IngestionView: React.FC<IngestionViewProps> = ({
   }, [reconnect]);
 
   const reconnectToVerba = () => {
+    setReconnectAttempts(0); // Reset retry counter for manual reconnection
     setReconnect((prevState) => !prevState);
   };
 
+  // Removed periodic status checking function - it was not working properly
+
   const setSocketErrorStatus = () => {
+    // Mark files as ERROR when WebSocket disconnects
+    console.log("🔄 WebSocket disconnected - marking in-progress files as ERROR");
+
     setFileMap((prevFileMap) => {
       if (fileMap) {
         const newFileMap = { ...prevFileMap };
@@ -120,12 +146,7 @@ const IngestionView: React.FC<IngestionViewProps> = ({
             newFileMap[fileMapKey].status != "READY"
           ) {
             newFileMap[fileMapKey].status = "ERROR";
-            newFileMap[fileMapKey].status_report["ERROR"] = {
-              fileID: fileMapKey,
-              status: "ERROR",
-              message: "Connection was interrupted",
-              took: 0,
-            };
+            newFileMap[fileMapKey].message = "WebSocket connection lost during import";
           }
         }
         return newFileMap;

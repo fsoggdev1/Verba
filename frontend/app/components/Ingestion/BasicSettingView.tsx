@@ -194,7 +194,7 @@ const BasicSettingView: React.FC<BasicSettingViewProps> = ({
           {selectedFileData &&
             Object.entries(fileMap[selectedFileData].status_report).map(
               ([status, statusReport]) => (
-                <div className="flex" key={"Status" + status}>
+                <div className="flex flex-col gap-2" key={"Status" + status}>
                   <p className="flex min-w-[8vw] gap-2 items-center text-text-verba">
                     {statusReport.status === "DONE" && (
                       <FaCheckCircle size={15} />
@@ -202,12 +202,11 @@ const BasicSettingView: React.FC<BasicSettingViewProps> = ({
                     {statusReport.status === "ERROR" && <MdError size={15} />}
                     {statusTextMap[statusReport.status]}
                   </p>
-                  <label
-                    className={`input flex items-center gap-2 w-full ${statusColorMap[statusReport.status]} bg-bg-verba`}
+                  <div
+                    className={`p-3 rounded-lg w-full ${statusColorMap[statusReport.status]} bg-bg-verba border border-gray-300`}
                   >
-                    <input
-                      type="text"
-                      className="grow w-full"
+                    <textarea
+                      className="w-full bg-transparent resize-none text-text-verba text-sm leading-relaxed"
                       value={
                         statusReport.took != 0
                           ? statusReport.message +
@@ -217,8 +216,15 @@ const BasicSettingView: React.FC<BasicSettingViewProps> = ({
                           : statusReport.message
                       }
                       disabled={true}
+                      rows={Math.max(2, Math.ceil((statusReport.message || "").length / 80))}
+                      style={{
+                        minHeight: '2.5rem',
+                        overflow: 'hidden',
+                        wordWrap: 'break-word',
+                        whiteSpace: 'pre-wrap'
+                      }}
                     />
-                  </label>
+                  </div>
                 </div>
               )
             )}

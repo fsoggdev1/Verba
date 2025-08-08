@@ -7,6 +7,16 @@
 
 Welcome to Verba: The Golden RAGtriever, an community-driven open-source application designed to offer an end-to-end, streamlined, and user-friendly interface for Retrieval-Augmented Generation (RAG) out of the box. In just a few easy steps, explore your datasets and extract insights with ease, either locally with Ollama and Huggingface or through LLM providers such as Anthrophic, Cohere, and OpenAI. This project is built with and for the community, please be aware that it might not be maintained with the same urgency as other Weaviate production applications. Feel free to contribute to the project and help us make Verba even better! <3
 
+## 🔧 Recent Improvements
+
+### Enhanced Import Resilience & HuggingFace Integration
+- **✅ Resilient Document Import**: Improved error handling with 3-retry mechanism for Weaviate connections
+- **✅ WebSocket Error Reduction**: Minimized repeated error messages during connection failures
+- **✅ HuggingFace Dependencies**: Full integration with sentence-transformers, torch, and transformers
+- **✅ Local Embeddings**: Support for 6 HuggingFace embedding models including all-MiniLM-L6-v2, BAAI/bge-m3
+- **✅ Docker Optimization**: Clean builds with proper dependency management and no image reuse issues
+- **✅ Configuration Management**: Automatic refresh of component availability after dependency installation
+
 ```
 pip install goldenverba
 ```

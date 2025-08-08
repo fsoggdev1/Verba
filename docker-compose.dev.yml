@@ -1,0 +1,30 @@
+# Development override for faster iteration
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  verba:
+    build:
+      target: dependencies  # Only build dependencies layer
+    volumes:
+      - ./data:/data/
+      # Mount entire source code for live development
+      - .:/Verba:cached
+      # Exclude node_modules and other build artifacts
+      - /Verba/node_modules
+      - /Verba/.next
+      - /Verba/__pycache__
+      - /Verba/.pytest_cache
+      # Cache directories
+      - huggingface_cache:/home/verba/.cache/huggingface
+      - pip_cache:/home/verba/.cache/pip
+    environment:
+      - PYTHONPATH=/Verba
+      - VERBA_DEVELOPMENT=true
+      - PYTHONDONTWRITEBYTECODE=1  # Don't create .pyc files
+      - PYTHONUNBUFFERED=1         # Force stdout/stderr to be unbuffered
+    # Override command for development with auto-reload
+    command: ["python", "-m", "goldenverba.server.api", "--reload", "--host", "0.0.0.0", "--port", "8000"]
+    
+volumes:
+  huggingface_cache:
+  pip_cache:

@@ -43,6 +43,7 @@ const FileComponent: React.FC<FileComponentProps> = ({
               <VerbaButton
                 title={statusTextMap[fileMap[fileData.fileID].status]}
                 className="w-[120px]"
+                showTooltip={true}
               />
             )}
           {fileMap[fileData.fileID].status == "DONE" && (
@@ -52,6 +53,7 @@ const FileComponent: React.FC<FileComponentProps> = ({
               selected={true}
               className="w-[120px]"
               selected_color={"bg-secondary-verba"}
+              showTooltip={true}
             />
           )}
           {fileMap[fileData.fileID].status == "ERROR" && (
@@ -61,6 +63,7 @@ const FileComponent: React.FC<FileComponentProps> = ({
               className="w-[120px]"
               selected={true}
               selected_color={"bg-warning-verba"}
+              showTooltip={true}
             />
           )}
         </div>
