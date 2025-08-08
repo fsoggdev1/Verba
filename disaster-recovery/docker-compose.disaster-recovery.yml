@@ -1,0 +1,48 @@
+---
+# Verba Disaster Recovery Docker Compose
+# Use with: docker compose -p verba-dr -f docker-compose.disaster-recovery.yml up -d
+
+services:
+  weaviate-dr:
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - '8080'
+      - --scheme
+      - http
+    image: semitechnologies/weaviate:1.25.10
+    container_name: weaviate-disaster-recovery
+    ports:
+      - 8080:8080
+      - 3000:8080
+    volumes:
+      - weaviate_dr_data:/var/lib/weaviate
+      - ./backups:/var/lib/weaviate/backups
+    restart: on-failure:0
+    healthcheck:
+      test: wget --no-verbose --tries=3 --spider http://localhost:8080/v1/.well-known/ready || exit 1
+      interval: 5s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    environment:
+      OPENAI_APIKEY: $OPENAI_API_KEY
+      COHERE_APIKEY: $COHERE_API_KEY
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+      PERSISTENCE_DATA_PATH: '/var/lib/weaviate'
+      ENABLE_MODULES: 'backup-filesystem,text2vec-openai,text2vec-cohere,text2vec-huggingface,qna-openai,generative-openai,generative-cohere'
+      BACKUP_FILESYSTEM_PATH: '/var/lib/weaviate/backups'
+      CLUSTER_HOSTNAME: 'node1'
+    networks:
+      - weaviate-dr-net
+
+volumes:
+  weaviate_dr_data: {}
+
+networks:
+  weaviate-dr-net:
+    external: false
+  
+...

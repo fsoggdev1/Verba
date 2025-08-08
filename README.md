@@ -7,6 +7,34 @@
 
 Welcome to Verba: The Golden RAGtriever, an community-driven open-source application designed to offer an end-to-end, streamlined, and user-friendly interface for Retrieval-Augmented Generation (RAG) out of the box. In just a few easy steps, explore your datasets and extract insights with ease, either locally with Ollama and Huggingface or through LLM providers such as Anthrophic, Cohere, and OpenAI. This project is built with and for the community, please be aware that it might not be maintained with the same urgency as other Weaviate production applications. Feel free to contribute to the project and help us make Verba even better! <3
 
+## 🚨 Disaster Recovery
+
+Verba now includes a comprehensive disaster recovery system for backing up and restoring your RAG database:
+
+```bash
+# Create backup
+cd disaster-recovery
+./backup_verba.sh
+
+# List backups
+./list_backups.sh
+
+# Start disaster recovery environment
+./start_disaster_recovery.sh
+
+# Restore from backup
+./restore_verba.sh <backup_id>
+```
+
+**Features:**
+- **Automated Backups**: One-command backup creation with timestamps
+- **Complete Restore**: Full disaster recovery with verification
+- **Data Integrity**: Automatic verification of restored data (178 documents expected)
+- **Isolated Recovery**: Separate container environment for safe restoration
+- **Easy Management**: Shell scripts for all common operations
+
+See [`disaster-recovery/README.md`](disaster-recovery/README.md) for complete documentation.
+
 ## 🔧 Recent Improvements
 
 ### Enhanced Import Resilience & HuggingFace Integration
@@ -16,6 +44,7 @@ Welcome to Verba: The Golden RAGtriever, an community-driven open-source applica
 - **✅ Local Embeddings**: Support for 6 HuggingFace embedding models including all-MiniLM-L6-v2, BAAI/bge-m3
 - **✅ Docker Optimization**: Clean builds with proper dependency management and no image reuse issues
 - **✅ Configuration Management**: Automatic refresh of component availability after dependency installation
+- **✅ Disaster Recovery**: Complete backup and restore system with automated scripts
 
 ```
 pip install goldenverba
